@@ -7,6 +7,8 @@
 // your own account credentials, then returns the latest reading.
 
 const express = require("express");
+// Use built-in fetch if available (Node 18+), otherwise fall back to node-fetch.
+const fetch = global.fetch || require("node-fetch");
 const app = express();
 
 const PORT = process.env.PORT || 3000;
