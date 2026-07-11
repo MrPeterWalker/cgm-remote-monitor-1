@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: dexcom-reader
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: DEXCOM_USERNAME
+        sync: false
+      - key: DEXCOM_PASSWORD
+        sync: false
+      - key: DEXCOM_SERVER
+        value: US
+      - key: API_KEY
+        sync: false

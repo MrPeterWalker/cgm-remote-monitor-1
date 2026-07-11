@@ -1,0 +1,57 @@
+openapi: 3.1.0
+info:
+  title: Glucose Reader
+  description: Returns the user's latest Dexcom glucose reading.
+  version: 1.0.0
+servers:
+  - url: https://REPLACE-WITH-YOUR-RENDER-URL.onrender.com
+paths:
+  /glucose/text:
+    get:
+      operationId: getGlucoseText
+      summary: Get the latest blood glucose reading as a spoken-friendly sentence
+      parameters:
+        - name: key
+          in: query
+          required: true
+          schema:
+            type: string
+          description: API key
+      responses:
+        "200":
+          description: A plain-text sentence describing the latest reading
+          content:
+            text/plain:
+              schema:
+                type: string
+  /glucose:
+    get:
+      operationId: getGlucoseJson
+      summary: Get the latest blood glucose reading as structured JSON
+      parameters:
+        - name: key
+          in: query
+          required: true
+          schema:
+            type: string
+          description: API key
+      responses:
+        "200":
+          description: Structured glucose data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  value_mgdl:
+                    type: number
+                  trend:
+                    type: string
+                  trend_arrow:
+                    type: string
+                  trend_description:
+                    type: string
+                  timestamp:
+                    type: string
+                  minutes_ago:
+                    type: integer
