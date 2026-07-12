@@ -19,6 +19,11 @@ const DEXCOM_PASSWORD = process.env.DEXCOM_PASSWORD;
 const API_KEY = process.env.API_KEY; // your own secret, required on every request
 const DEXCOM_SERVER = (process.env.DEXCOM_SERVER || "OUS").toUpperCase(); // "US" or "OUS"
 
+// Dexcom's API always returns mg/dL. Set this to "mmol" to have /glucose/text
+// (and the "display_value" field in /glucose) show mmol/L instead — standard
+// in Australia, UK, and most countries outside the US.
+const GLUCOSE_UNIT = (process.env.GLUCOSE_UNIT || "mmol").toLowerCase();
+
 // The public Dexcom "application ID" used by the official Share client.
 // This is not a secret — it's the same fixed ID every Dexcom Share
 // integration (including Nightscout's bridge plugin) uses to talk to
@@ -222,8 +227,18 @@ function buildPayload(reading) {
     : null;
   const trendInfo = TREND_MAP[reading.Trend] || TREND_MAP.None;
 
+  // Standard mg/dL -> mmol/L conversion factor, rounded to 1 decimal place
+  // to match how mmol/L is normally displayed (e.g. 6.5, not 6.54321).
+  const value_mmol = Math.round((reading.Value / 18.0182) * 10) / 10;
+
+  const displayValue = GLUCOSE_UNIT === "mmol" ? value_mmol : reading.Value;
+  const displayUnit = GLUCOSE_UNIT === "mmol" ? "mmol/L" : "mg/dL";
+
   return {
     value_mgdl: reading.Value,
+    value_mmol,
+    display_value: displayValue,
+    display_unit: displayUnit,
     trend: reading.Trend,
     trend_arrow: trendInfo.arrow,
     trend_description: trendInfo.description,
@@ -276,7 +291,7 @@ app.get("/glucose/text", requireApiKey, async (req, res) => {
         : payload.minutes_ago <= 1
         ? "just now"
         : `${payload.minutes_ago} minutes ago`;
-    const sentence = `Blood glucose is ${payload.value_mgdl} mg/dL, ${payload.trend_description}, as of ${ago}.`;
+    const sentence = `Blood glucose is ${payload.display_value} ${payload.display_unit}, ${payload.trend_description}, as of ${ago}.`;
     res.type("text/plain").send(sentence);
   } catch (err) {
     console.error(err);
