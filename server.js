@@ -17,7 +17,7 @@ const PORT = process.env.PORT || 3000;
 const DEXCOM_USERNAME = process.env.DEXCOM_USERNAME;
 const DEXCOM_PASSWORD = process.env.DEXCOM_PASSWORD;
 const API_KEY = process.env.API_KEY; // your own secret, required on every request
-const DEXCOM_SERVER = (process.env.DEXCOM_SERVER || "US").toUpperCase(); // "US" or "OUS"
+const DEXCOM_SERVER = (process.env.DEXCOM_SERVER || "OUS").toUpperCase(); // "US" or "OUS"
 
 // The public Dexcom "application ID" used by the official Share client.
 // This is not a secret — it's the same fixed ID every Dexcom Share

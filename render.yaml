@@ -11,7 +11,7 @@ services:
       - key: DEXCOM_PASSWORD
         sync: false
       - key: DEXCOM_SERVER
-        value: US
+        value: OUS
       - key: API_KEY
         sync: false
       - key: NODE_VERSION
