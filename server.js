@@ -25,6 +25,11 @@ const DEXCOM_SERVER = (process.env.DEXCOM_SERVER || "US").toUpperCase(); // "US"
 // Dexcom's own service. Your account credentials are what authenticate you.
 const APPLICATION_ID = "d8665ade-9673-4e27-9ff6-92db4ce13d13";
 
+// Dexcom's Share servers expect requests to look like they're coming from
+// the official mobile app. Without this header, login can silently fail
+// and return an empty session instead of a clear error.
+const DEXCOM_USER_AGENT = "Dexcom Share/3.0.2.11 CFNetwork/711.2.23 Darwin/14.0.0";
+
 const BASE_URL =
   DEXCOM_SERVER === "OUS"
     ? "https://shareous1.dexcom.com/ShareWebServices/Services"
@@ -47,7 +52,11 @@ async function loginToDexcom() {
     `${BASE_URL}/General/LoginPublisherAccountByName`,
     {
       method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        "User-Agent": DEXCOM_USER_AGENT,
+      },
       body: JSON.stringify({
         accountName: DEXCOM_USERNAME,
         password: DEXCOM_PASSWORD,
@@ -84,7 +93,7 @@ async function fetchLatestReading() {
 
   let res = await fetch(
     `${BASE_URL}/Publisher/ReadPublisherLatestGlucoseValues?sessionId=${sessionId}&minutes=1440&maxCount=1`,
-    { method: "POST", headers: { Accept: "application/json" } }
+    { method: "POST", headers: { Accept: "application/json", "User-Agent": DEXCOM_USER_AGENT } }
   );
 
   // If the cached session expired server-side, log in again once and retry.
@@ -93,7 +102,7 @@ async function fetchLatestReading() {
     sessionId = await getSessionId();
     res = await fetch(
       `${BASE_URL}/Publisher/ReadPublisherLatestGlucoseValues?sessionId=${sessionId}&minutes=1440&maxCount=1`,
-      { method: "POST", headers: { Accept: "application/json" } }
+      { method: "POST", headers: { Accept: "application/json", "User-Agent": DEXCOM_USER_AGENT } }
     );
   }
 
