@@ -47,7 +47,7 @@ let cachedSessionId = null;
 let cachedSessionAt = 0;
 const SESSION_TTL_MS = 9 * 60 * 1000;
 
-async function loginToDexcom() {
+async function loginByName() {
   const res = await fetch(
     `${BASE_URL}/General/LoginPublisherAccountByName`,
     {
@@ -72,9 +72,86 @@ async function loginToDexcom() {
 
   const sessionId = await res.json();
   if (!sessionId || sessionId === "00000000-0000-0000-0000-000000000000") {
-    throw new Error("Dexcom login returned an empty session — check your username/password.");
+    return null; // signal caller to try the fallback flow
   }
   return sessionId;
+}
+
+// Some accounts (commonly newer G7 accounts) silently fail
+// LoginPublisherAccountByName. This fallback authenticates to get an
+// accountId first, then logs in with that accountId instead.
+async function loginByAccountIdFallback() {
+  const authRes = await fetch(
+    `${BASE_URL}/General/AuthenticatePublisherAccount`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        "User-Agent": DEXCOM_USER_AGENT,
+      },
+      body: JSON.stringify({
+        accountName: DEXCOM_USERNAME,
+        password: DEXCOM_PASSWORD,
+        applicationId: APPLICATION_ID,
+      }),
+    }
+  );
+
+  if (!authRes.ok) {
+    const text = await authRes.text().catch(() => "");
+    throw new Error(`Dexcom authenticate failed (${authRes.status}): ${text}`);
+  }
+
+  const accountId = await authRes.json();
+  if (!accountId || accountId === "00000000-0000-0000-0000-000000000000") {
+    throw new Error(
+      "Dexcom login returned an empty session — check your username/password."
+    );
+  }
+
+  const loginRes = await fetch(
+    `${BASE_URL}/General/LoginPublisherAccountById`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        "User-Agent": DEXCOM_USER_AGENT,
+      },
+      body: JSON.stringify({
+        accountId,
+        password: DEXCOM_PASSWORD,
+        applicationId: APPLICATION_ID,
+      }),
+    }
+  );
+
+  if (!loginRes.ok) {
+    const text = await loginRes.text().catch(() => "");
+    throw new Error(`Dexcom login-by-id failed (${loginRes.status}): ${text}`);
+  }
+
+  const sessionId = await loginRes.json();
+  if (!sessionId || sessionId === "00000000-0000-0000-0000-000000000000") {
+    throw new Error(
+      "Dexcom login returned an empty session — check your username/password."
+    );
+  }
+  return sessionId;
+}
+
+let lastLoginMethod = "not yet attempted";
+
+async function loginToDexcom() {
+  const sessionId = await loginByName();
+  if (sessionId) {
+    lastLoginMethod = "LoginPublisherAccountByName";
+    return sessionId;
+  }
+  const fallbackSession = await loginByAccountIdFallback();
+  lastLoginMethod = "AuthenticatePublisherAccount + LoginPublisherAccountById (fallback)";
+  return fallbackSession;
 }
 
 async function getSessionId() {
@@ -175,6 +252,7 @@ app.get("/debug", requireApiKey, (req, res) => {
     username_length: DEXCOM_USERNAME ? DEXCOM_USERNAME.length : 0,
     password_configured: Boolean(DEXCOM_PASSWORD),
     password_length: DEXCOM_PASSWORD ? DEXCOM_PASSWORD.length : 0,
+    last_login_method: lastLoginMethod,
   });
 });
 
