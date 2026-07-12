@@ -299,6 +299,180 @@ app.get("/glucose/text", requireApiKey, async (req, res) => {
   }
 });
 
+app.get("/dashboard", requireApiKey, (req, res) => {
+  const key = req.query.key;
+  res.type("html").send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Glucose Monitor</title>
+<style>
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+  }
+  :root {
+    --bg: #10151c;
+    --card: #161c25;
+    --line: #232b36;
+    --text: #e8ecf1;
+    --muted: #7c8797;
+    --ok: #6ee7b7;
+    --high: #f5a623;
+    --low: #f87171;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'IBM Plex Sans', 'Segoe UI', system-ui, sans-serif;
+    display: flex; align-items: center; justify-content: center;
+  }
+  @font-face {
+    font-family: 'IBM Plex Mono';
+    src: local('IBM Plex Mono');
+  }
+  .card {
+    width: min(92vw, 420px);
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 20px;
+    padding: 40px 32px 32px;
+    text-align: center;
+  }
+  .eyebrow {
+    font-size: 12px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 28px;
+  }
+  .ring-wrap {
+    position: relative;
+    width: 220px; height: 220px;
+    margin: 0 auto 24px;
+  }
+  svg { transform: rotate(-90deg); }
+  .ring-bg { fill: none; stroke: var(--line); stroke-width: 6; }
+  .ring-fg {
+    fill: none; stroke: var(--ok); stroke-width: 6; stroke-linecap: round;
+    transition: stroke-dashoffset 1s linear, stroke 0.6s ease;
+  }
+  .center {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+  }
+  .value {
+    font-family: 'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace;
+    font-size: 56px; font-weight: 600; letter-spacing: -0.02em;
+    transition: opacity 0.3s ease;
+  }
+  .unit { font-size: 13px; color: var(--muted); margin-top: 2px; }
+  .trend-row {
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    font-size: 15px; color: var(--text); margin-bottom: 6px;
+  }
+  .arrow { font-size: 20px; }
+  .updated {
+    font-size: 13px; color: var(--muted);
+  }
+  .next {
+    font-size: 12px; color: var(--muted); margin-top: 18px;
+    border-top: 1px solid var(--line); padding-top: 16px;
+  }
+  .error {
+    color: var(--low); font-size: 14px; line-height: 1.5;
+  }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="eyebrow">Glucose Monitor</div>
+    <div class="ring-wrap">
+      <svg width="220" height="220" viewBox="0 0 220 220">
+        <circle class="ring-bg" cx="110" cy="110" r="100"></circle>
+        <circle class="ring-fg" id="ring" cx="110" cy="110" r="100"
+          stroke-dasharray="628.3" stroke-dashoffset="0"></circle>
+      </svg>
+      <div class="center">
+        <div class="value" id="value">--</div>
+        <div class="unit" id="unit">loading</div>
+      </div>
+    </div>
+    <div class="trend-row">
+      <span class="arrow" id="arrow">→</span>
+      <span id="trendDesc">connecting…</span>
+    </div>
+    <div class="updated" id="updated">&nbsp;</div>
+    <div class="next" id="next">Refreshing every 5 minutes</div>
+  </div>
+
+<script>
+  const KEY = ${JSON.stringify(key)};
+  const REFRESH_MS = 5 * 60 * 1000;
+  const CIRCUMFERENCE = 628.3;
+  const ring = document.getElementById('ring');
+  let refreshTimer = null;
+  let tickTimer = null;
+  let lastFetchAt = Date.now();
+
+  function setRingColor(displayValue, unit) {
+    // Rough clinical bands, works for either unit since we check the unit label.
+    const mgdl = unit.startsWith('mmol') ? displayValue * 18.0182 : displayValue;
+    if (mgdl < 70) return 'var(--low)';
+    if (mgdl > 180) return 'var(--high)';
+    return 'var(--ok)';
+  }
+
+  async function fetchReading() {
+    try {
+      const res = await fetch('/glucose?key=' + encodeURIComponent(KEY));
+      if (!res.ok) throw new Error('Server returned ' + res.status);
+      const data = await res.json();
+
+      document.getElementById('value').textContent = data.display_value;
+      document.getElementById('unit').textContent = data.display_unit;
+      document.getElementById('arrow').textContent = data.trend_arrow;
+      document.getElementById('trendDesc').textContent = data.trend_description;
+      document.getElementById('updated').textContent =
+        data.minutes_ago === 0 ? 'Updated just now' : 'Updated ' + data.minutes_ago + ' min ago';
+
+      const color = setRingColor(data.display_value, data.display_unit);
+      ring.style.stroke = color;
+
+      lastFetchAt = Date.now();
+      resetRing();
+    } catch (err) {
+      document.getElementById('value').textContent = '--';
+      document.getElementById('unit').textContent = '';
+      document.getElementById('trendDesc').innerHTML =
+        '<span class="error">Could not reach the sensor feed. Retrying automatically.</span>';
+    }
+  }
+
+  function resetRing() {
+    ring.style.transition = 'none';
+    ring.style.strokeDashoffset = '0';
+    // Force reflow so the transition re-applies cleanly next tick.
+    void ring.offsetWidth;
+    ring.style.transition = 'stroke-dashoffset 1s linear, stroke 0.6s ease';
+  }
+
+  function tick() {
+    const elapsed = Date.now() - lastFetchAt;
+    const fraction = Math.min(elapsed / REFRESH_MS, 1);
+    ring.style.strokeDashoffset = String(CIRCUMFERENCE * fraction);
+  }
+
+  fetchReading();
+  refreshTimer = setInterval(fetchReading, REFRESH_MS);
+  tickTimer = setInterval(tick, 1000);
+</script>
+</body>
+</html>`);
+});
+
 app.listen(PORT, () => {
   console.log(`Dexcom reader listening on port ${PORT}`);
 });
