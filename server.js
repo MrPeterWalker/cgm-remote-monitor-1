@@ -158,6 +158,17 @@ app.get("/", (req, res) => {
   res.send("Dexcom reader is running. See /glucose and /glucose/text (both require ?key=).");
 });
 
+app.get("/debug", requireApiKey, (req, res) => {
+  res.json({
+    dexcom_server_setting: DEXCOM_SERVER,
+    base_url_in_use: BASE_URL,
+    username_configured: Boolean(DEXCOM_USERNAME),
+    username_length: DEXCOM_USERNAME ? DEXCOM_USERNAME.length : 0,
+    password_configured: Boolean(DEXCOM_PASSWORD),
+    password_length: DEXCOM_PASSWORD ? DEXCOM_PASSWORD.length : 0,
+  });
+});
+
 app.get("/glucose", requireApiKey, async (req, res) => {
   try {
     const reading = await fetchLatestReading();
