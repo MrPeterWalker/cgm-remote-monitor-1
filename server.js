@@ -170,22 +170,25 @@ async function getSessionId() {
   return sessionId;
 }
 
-async function fetchLatestReading() {
+async function fetchReadings(minutes, maxCount) {
   let sessionId = await getSessionId();
 
-  let res = await fetch(
-    `${BASE_URL}/Publisher/ReadPublisherLatestGlucoseValues?sessionId=${sessionId}&minutes=1440&maxCount=1`,
-    { method: "POST", headers: { Accept: "application/json", "User-Agent": DEXCOM_USER_AGENT } }
-  );
+  const url = (sid) =>
+    `${BASE_URL}/Publisher/ReadPublisherLatestGlucoseValues?sessionId=${sid}&minutes=${minutes}&maxCount=${maxCount}`;
+
+  let res = await fetch(url(sessionId), {
+    method: "POST",
+    headers: { Accept: "application/json", "User-Agent": DEXCOM_USER_AGENT },
+  });
 
   // If the cached session expired server-side, log in again once and retry.
   if (res.status === 500 || res.status === 401) {
     cachedSessionId = null;
     sessionId = await getSessionId();
-    res = await fetch(
-      `${BASE_URL}/Publisher/ReadPublisherLatestGlucoseValues?sessionId=${sessionId}&minutes=1440&maxCount=1`,
-      { method: "POST", headers: { Accept: "application/json", "User-Agent": DEXCOM_USER_AGENT } }
-    );
+    res = await fetch(url(sessionId), {
+      method: "POST",
+      headers: { Accept: "application/json", "User-Agent": DEXCOM_USER_AGENT },
+    });
   }
 
   if (!res.ok) {
@@ -197,6 +200,11 @@ async function fetchLatestReading() {
   if (!Array.isArray(readings) || readings.length === 0) {
     throw new Error("No glucose readings returned by Dexcom.");
   }
+  return readings;
+}
+
+async function fetchLatestReading() {
+  const readings = await fetchReadings(1440, 1);
   return readings[0];
 }
 
@@ -299,6 +307,23 @@ app.get("/glucose/text", requireApiKey, async (req, res) => {
   }
 });
 
+app.get("/glucose/history", requireApiKey, async (req, res) => {
+  try {
+    // Dexcom readings arrive every 5 minutes, so 3 hours is ~36 readings.
+    const minutes = parseInt(req.query.minutes, 10) || 180;
+    const maxCount = Math.min(Math.ceil(minutes / 5) + 2, 288);
+    const readings = await fetchReadings(minutes, maxCount);
+    const points = readings
+      .map(buildPayload)
+      .filter((p) => p.timestamp)
+      .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+    res.json(points);
+  } catch (err) {
+    console.error(err);
+    res.status(502).json({ error: err.message });
+  }
+});
+
 app.get("/dashboard", requireApiKey, (req, res) => {
   const key = req.query.key;
   res.type("html").send(`<!DOCTYPE html>
@@ -377,6 +402,29 @@ app.get("/dashboard", requireApiKey, (req, res) => {
   .updated {
     font-size: 13px; color: var(--muted);
   }
+  .graph-wrap {
+    margin-top: 22px;
+    padding-top: 18px;
+    border-top: 1px solid var(--line);
+  }
+  .graph-label {
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    text-align: left;
+    margin-bottom: 10px;
+  }
+  .graph-empty {
+    font-size: 13px;
+    color: var(--muted);
+    padding: 30px 0;
+  }
+  .graph-tick {
+    font-size: 10px;
+    fill: var(--muted);
+    font-family: 'IBM Plex Sans', 'Segoe UI', system-ui, sans-serif;
+  }
   .next {
     font-size: 12px; color: var(--muted); margin-top: 18px;
     border-top: 1px solid var(--line); padding-top: 16px;
@@ -405,6 +453,10 @@ app.get("/dashboard", requireApiKey, (req, res) => {
       <span id="trendDesc">connecting…</span>
     </div>
     <div class="updated" id="updated">&nbsp;</div>
+    <div class="graph-wrap">
+      <div class="graph-label">Past 3 hours</div>
+      <div id="graph"></div>
+    </div>
     <div class="next" id="next">Refreshing every 5 minutes</div>
   </div>
 
@@ -417,12 +469,15 @@ app.get("/dashboard", requireApiKey, (req, res) => {
   let tickTimer = null;
   let lastFetchAt = Date.now();
 
-  function setRingColor(displayValue, unit) {
+  function bandColor(displayValue, unit) {
     // Rough clinical bands, works for either unit since we check the unit label.
     const mgdl = unit.startsWith('mmol') ? displayValue * 18.0182 : displayValue;
     if (mgdl < 70) return 'var(--low)';
     if (mgdl > 180) return 'var(--high)';
     return 'var(--ok)';
+  }
+  function setRingColor(displayValue, unit) {
+    return bandColor(displayValue, unit);
   }
 
   async function fetchReading() {
@@ -451,6 +506,75 @@ app.get("/dashboard", requireApiKey, (req, res) => {
     }
   }
 
+  function renderGraph(points) {
+    const container = document.getElementById('graph');
+    if (!points || points.length < 2) {
+      container.innerHTML = '<div class="graph-empty">Not enough data yet</div>';
+      return;
+    }
+
+    const W = 356, H = 120, PAD_X = 4, PAD_Y = 16;
+    const unit = points[points.length - 1].display_unit;
+    const isMmol = unit.startsWith('mmol');
+    const lowLine = isMmol ? 3.9 : 70;
+    const highLine = isMmol ? 10 : 180;
+    const pad = isMmol ? 0.6 : 12;
+
+    const values = points.map(function (p) { return p.display_value; });
+    const times = points.map(function (p) { return new Date(p.timestamp).getTime(); });
+
+    const rangeLow = Math.min(Math.min.apply(null, values), lowLine) - pad;
+    const rangeHigh = Math.max(Math.max.apply(null, values), highLine) + pad;
+    const minT = times[0];
+    const maxT = times[times.length - 1] || minT + 1;
+
+    function x(t) { return PAD_X + ((t - minT) / (maxT - minT || 1)) * (W - PAD_X * 2); }
+    function y(v) { return H - PAD_Y - ((v - rangeLow) / (rangeHigh - rangeLow || 1)) * (H - PAD_Y * 2); }
+
+    let linePath = '';
+    let dots = '';
+    points.forEach(function (p, i) {
+      const px = x(new Date(p.timestamp).getTime());
+      const py = y(p.display_value);
+      linePath += (i === 0 ? 'M' : 'L') + px.toFixed(1) + ',' + py.toFixed(1) + ' ';
+    });
+    const last = points[points.length - 1];
+    const lastColor = bandColor(last.display_value, last.display_unit);
+    dots += '<circle cx="' + x(times[times.length - 1]).toFixed(1) + '" cy="' +
+      y(last.display_value).toFixed(1) + '" r="4" fill="' + lastColor + '"></circle>';
+
+    const areaPath = linePath + 'L' + x(maxT).toFixed(1) + ',' + (H - PAD_Y) +
+      ' L' + x(minT).toFixed(1) + ',' + (H - PAD_Y) + ' Z';
+
+    const lowY = y(lowLine).toFixed(1);
+    const highY = y(highLine).toFixed(1);
+
+    const startLabel = new Date(minT).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    const endLabel = new Date(maxT).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+
+    container.innerHTML =
+      '<svg width="100%" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" style="transform:none;overflow:visible;">' +
+        '<line x1="' + PAD_X + '" y1="' + lowY + '" x2="' + (W - PAD_X) + '" y2="' + lowY + '" stroke="var(--line)" stroke-width="1" stroke-dasharray="3,4"></line>' +
+        '<line x1="' + PAD_X + '" y1="' + highY + '" x2="' + (W - PAD_X) + '" y2="' + highY + '" stroke="var(--line)" stroke-width="1" stroke-dasharray="3,4"></line>' +
+        '<path d="' + areaPath + '" fill="' + lastColor + '" fill-opacity="0.10" stroke="none"></path>' +
+        '<path d="' + linePath.trim() + '" fill="none" stroke="' + lastColor + '" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></path>' +
+        dots +
+        '<text class="graph-tick" x="' + PAD_X + '" y="' + (H - 2) + '" text-anchor="start">' + startLabel + '</text>' +
+        '<text class="graph-tick" x="' + (W - PAD_X) + '" y="' + (H - 2) + '" text-anchor="end">' + endLabel + '</text>' +
+      '</svg>';
+  }
+
+  async function fetchHistory() {
+    try {
+      const res = await fetch('/glucose/history?key=' + encodeURIComponent(KEY) + '&minutes=180');
+      if (!res.ok) throw new Error('Server returned ' + res.status);
+      const points = await res.json();
+      renderGraph(points);
+    } catch (err) {
+      document.getElementById('graph').innerHTML = '<div class="graph-empty">Could not load history.</div>';
+    }
+  }
+
   function resetRing() {
     ring.style.transition = 'none';
     ring.style.strokeDashoffset = '0';
@@ -466,7 +590,8 @@ app.get("/dashboard", requireApiKey, (req, res) => {
   }
 
   fetchReading();
-  refreshTimer = setInterval(fetchReading, REFRESH_MS);
+  fetchHistory();
+  refreshTimer = setInterval(function () { fetchReading(); fetchHistory(); }, REFRESH_MS);
   tickTimer = setInterval(tick, 1000);
 </script>
 </body>
