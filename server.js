@@ -7,11 +7,24 @@
 // your own account credentials, then returns the latest reading.
 
 const express = require("express");
+const crypto = require("crypto");
 // Use built-in fetch if available (Node 18+), otherwise fall back to node-fetch.
 const fetch = global.fetch || require("node-fetch");
 const app = express();
 
 const PORT = process.env.PORT || 3000;
+
+// ---- Optional: push readings straight into Nightscout ----
+// If both of these are set, this service will push every new Dexcom reading
+// directly into your Nightscout instance's own entries API, independent of
+// tconnectsync/pump-sync (which only handles insulin/pump data, not CGM).
+const NIGHTSCOUT_URL = (process.env.NIGHTSCOUT_URL || "").replace(/\/$/, "");
+const NIGHTSCOUT_SECRET = process.env.NIGHTSCOUT_SECRET;
+const NS_PUSH_INTERVAL_MS = 60 * 1000; // check every minute; only pushes when there's genuinely new data
+
+let lastPushedTimestamp = null;
+let lastPushStatus = "not started";
+let lastPushAt = null;
 
 // ---- Required environment variables ----
 const DEXCOM_USERNAME = process.env.DEXCOM_USERNAME;
@@ -263,8 +276,82 @@ function requireApiKey(req, res, next) {
   next();
 }
 
+// Nightscout's entries API expects a SHA1 hex hash of your API_SECRET in the
+// "api-secret" header, not the raw secret itself.
+function nsApiSecretHash(secret) {
+  return crypto.createHash("sha1").update(secret).digest("hex");
+}
+
+async function pushReadingToNightscout(payload) {
+  if (!NIGHTSCOUT_URL || !NIGHTSCOUT_SECRET) return; // feature not configured, skip silently
+  if (!payload.timestamp) return;
+  if (payload.timestamp === lastPushedTimestamp) return; // already pushed this exact reading
+
+  // Nightscout's own trend/direction strings match Dexcom's Trend field
+  // almost exactly, so we pass it straight through.
+  const entry = {
+    type: "sgv",
+    sgv: payload.value_mgdl, // Nightscout always stores glucose in mg/dL internally
+    date: new Date(payload.timestamp).getTime(),
+    dateString: payload.timestamp,
+    direction: payload.trend || "NOT COMPUTABLE",
+    device: "dexcom-reader",
+  };
+
+  const res = await fetch(`${NIGHTSCOUT_URL}/api/v1/entries`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "api-secret": nsApiSecretHash(NIGHTSCOUT_SECRET),
+    },
+    body: JSON.stringify([entry]),
+  });
+
+  lastPushAt = new Date().toISOString();
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    lastPushStatus = `error ${res.status}: ${text.slice(0, 300)}`;
+    console.error("Nightscout push failed:", lastPushStatus);
+    return;
+  }
+
+  lastPushedTimestamp = payload.timestamp;
+  lastPushStatus = `ok (${payload.display_value} ${payload.display_unit})`;
+  console.log(`Pushed glucose reading to Nightscout: ${payload.display_value} ${payload.display_unit} @ ${payload.timestamp}`);
+}
+
+async function nightscoutPushTick() {
+  try {
+    const reading = await fetchLatestReading();
+    const payload = buildPayload(reading);
+    await pushReadingToNightscout(payload);
+  } catch (err) {
+    lastPushStatus = `exception: ${err.message}`;
+    console.error("Nightscout push loop error:", err.message);
+  }
+}
+
+if (NIGHTSCOUT_URL && NIGHTSCOUT_SECRET) {
+  nightscoutPushTick(); // run once immediately on boot
+  setInterval(nightscoutPushTick, NS_PUSH_INTERVAL_MS);
+  console.log(`Nightscout CGM push enabled, targeting ${NIGHTSCOUT_URL}`);
+} else {
+  console.log("NIGHTSCOUT_URL / NIGHTSCOUT_SECRET not set — Nightscout CGM push disabled.");
+}
+
 app.get("/", (req, res) => {
   res.send("Dexcom reader is running. See /glucose and /glucose/text (both require ?key=).");
+});
+
+app.get("/nightscout-status", requireApiKey, (req, res) => {
+  res.json({
+    enabled: Boolean(NIGHTSCOUT_URL && NIGHTSCOUT_SECRET),
+    nightscout_url: NIGHTSCOUT_URL || null,
+    last_pushed_reading_timestamp: lastPushedTimestamp,
+    last_push_status: lastPushStatus,
+    last_push_at: lastPushAt,
+  });
 });
 
 app.get("/debug", requireApiKey, (req, res) => {
